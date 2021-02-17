@@ -2,6 +2,7 @@ import serial
 import time
 from matplotlib import pyplot as plt
 import numpy as np
+from scipy import ndimage
 
 ser = serial.Serial('COM41', 115200, timeout = 1)
 
@@ -10,6 +11,7 @@ bins = []
 SWEEPS_PER_FRAME = 64
 START_DISTANCE = 240
 LENGTH = 560
+SWEEP_RATE = 1000000
 DISTANCES = [x for x in range(START_DISTANCE, START_DISTANCE+LENGTH, 60)]
 
 def print_bts(bts):
@@ -34,8 +36,8 @@ def write_reg(reg, val):
     cmd = bytearray(cmdls)
     send(cmd)
 
-def read_buf(ofst):
-    cmdls = [0xCC, 0x03, 0x00, 0xFA, 0xE8, ofst, 0x00, 0xCD]
+def read_buf():
+    cmdls = [0xCC, 0x03, 0x00, 0xFA, 0xE8, 0x00, 0x00, 0xCD]
     cmd = bytearray(cmdls)
     rep = send(cmd)
     lenn = int.from_bytes(rep[1:3], "little")
@@ -45,20 +47,17 @@ def read_buf(ofst):
     fm = split_frame(frame)
      
     return fm
-     
-    plt.plot(fm[:,0])
-    plt.show()
 
 def split_frame(frame):
     len_frm = len(frame)
     
-    frame_arr = np.empty((SWEEPS_PER_FRAME,len(DISTANCES)))
+    frame_arr = np.empty((len(DISTANCES),SWEEPS_PER_FRAME))
     
     for i in range(0,len_frm,2):
         v = int.from_bytes(frame[i:i+2], "little")
         entry = i//2
-        x = entry//len(DISTANCES)
-        y = entry - x*len(DISTANCES)
+        y = entry//len(DISTANCES)
+        x = entry - y*len(DISTANCES)
         frame_arr[x,y] = v
     return frame_arr
     
@@ -114,7 +113,7 @@ write_reg(0x42,0x00)
 ##set repition mode to be limited to update rate
 write_reg(0x22,0x02)
 ##set sweep rate to 1 000 000 mHz
-write_reg(0x41, 1000000)
+write_reg(0x41, SWEEP_RATE)
 
 
 ##set start distace to 240 mm
@@ -170,8 +169,42 @@ time.sleep(1)
 read_reg(0x06)
 
 ##read buffer
-read_buf(0x00)
+frame = read_buf()
 
+for i,row in enumerate(frame):
+    summ = 0
+    for j,v in enumerate(row):
+        summ += v
+    ave = summ/len(row)
+    for j,v in enumerate(row):
+        frame[i,j] -= ave
+
+fft_frame = np.fft.rfft(frame,axis=1)
+
+for i,row in enumerate(fft_frame):
+    for j,v in enumerate(row):
+        fft_frame[i,j] = abs(v)
+
+fft_frame = fft_frame.real.astype('float', copy = False)
+
+maxx = np.amax(fft_frame)
+
+for i,row in enumerate(fft_frame):
+             for j,ent in enumerate(row):
+                 if ent < 0.5*maxx:
+                    fft_frame[i,j] = 0
+
+#find average speed
+half_wavelength = 2.445e-3
+
+d,s = ndimage.measurements.center_of_mass(fft_frame)
+d *= 60
+d += START_DISTANCE
+s *= SWEEP_RATE/(SWEEPS_PER_FRAME*1000) * half_wavelength
+print("Speed: " + "{:10.4f}".format(s) + "m/s Depth: " + "{:10.4f}".format(d) + "mm Amp: " + "{:10.4f}".format(maxx))
+
+plt.matshow(fft_frame)
+plt.show()
 
 
 
